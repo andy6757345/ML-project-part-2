@@ -1,0 +1,95 @@
+# accuracy 0.68005
+# neural networks model
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import f1_score
+from imblearn.over_sampling import SMOTE
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.optimizers import Adam
+
+# Load the datasets
+train_data = pd.read_csv("train.csv")
+test_data = pd.read_csv("test.csv")
+
+# Drop rows with missing target values (category)
+train_data = train_data.dropna(subset=["category"])
+
+# Fill missing values for categorical and numerical columns
+for col in train_data.columns:
+    if train_data[col].isnull().sum() > 0:
+        if train_data[col].dtype == 'object':
+            train_data[col] = train_data[col].fillna("missing")
+        else:
+            train_data[col] = train_data[col].fillna(train_data[col].mean())
+
+for col in test_data.columns:
+    if test_data[col].isnull().sum() > 0:
+        if test_data[col].dtype == 'object':
+            test_data[col] = test_data[col].fillna("missing")
+        else:
+            test_data[col] = test_data[col].fillna(test_data[col].mean())
+
+# Encode categorical variables
+categorical_cols = train_data.select_dtypes(include=['object']).columns.drop(["trip_ID"])
+encoders = {}
+
+for col in categorical_cols:
+    encoder = LabelEncoder()
+    train_data[col] = encoder.fit_transform(train_data[col])
+    test_data[col] = test_data[col].apply(lambda x: encoder.transform([x])[0] if x in encoder.classes_ else -1)
+    encoders[col] = encoder
+
+# Separate features and target
+X = train_data.drop(columns=["trip_ID", "category"])
+y = train_data["category"].astype(int)
+
+# Scale features
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+X_test = scaler.transform(test_data.drop(columns=["trip_ID"]))
+
+# Balance classes using SMOTE
+smote = SMOTE(random_state=42)
+X_balanced, y_balanced = smote.fit_resample(X, y)
+
+# Define the neural network model
+def create_nn_model(learning_rate=0.001, dropout_rate=0.3, num_neurons=128):
+    model = Sequential([
+        Dense(num_neurons, activation='relu', input_dim=X_balanced.shape[1]),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        Dense(num_neurons // 2, activation='relu'),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        Dense(3, activation='softmax')  # 3 classes for classification
+    ])
+    model.compile(optimizer=Adam(learning_rate=learning_rate), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# Train the neural network model
+def train_nn_model(model):
+    # Early stopping with patience set to 5
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    model.fit(X_balanced, y_balanced, epochs=10, batch_size=32, validation_split=0.2, callbacks=[early_stopping], verbose=1)
+
+# Create the model
+model = create_nn_model()
+
+# Train the model for 10 epochs
+train_nn_model(model)
+
+# Now, make predictions for the test set
+nn_predictions = model.predict(X_test).argmax(axis=1)
+
+# Prepare the submission file
+submission = pd.DataFrame({
+    "trip_ID": test_data["trip_ID"],
+    "category": nn_predictions
+})
+
+# Save the submission file to CSV
+submission.to_csv("submission_nn_new1.csv", index=False)
+print("Submission file saved as 'submission.csv'")
