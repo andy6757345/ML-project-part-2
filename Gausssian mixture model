@@ -1,0 +1,115 @@
+# accuracy 0.45783
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import SelectKBest, f_classif
+
+# Load training dataset
+train_df = pd.read_csv('train.csv')
+
+# Drop irrelevant columns and handle missing values
+train_df.drop(columns=['trip_ID', 'special_requirements'], inplace=True)
+train_df.dropna(subset=['category'], inplace=True)
+
+# Impute missing values for 'female_count' and 'male_count'
+train_df['female_count'] = train_df['female_count'].fillna(train_df['female_count'].median())
+train_df['male_count'] = train_df['male_count'].fillna(train_df['male_count'].median())
+
+# Feature Engineering: create additional useful features
+train_df['total_people'] = train_df['female_count'] + train_df['male_count']
+train_df['female_to_male_ratio'] = train_df['female_count'] / (train_df['male_count'] + 1)
+
+# Categorical processing with one-hot encoding
+categorical_cols = train_df.select_dtypes(include=['object']).columns
+train_df[categorical_cols] = train_df[categorical_cols].fillna('Unknown')
+train_df = pd.get_dummies(train_df, columns=categorical_cols, drop_first=True)
+
+# Prepare features (X) and target (y)
+X = train_df.drop(columns=['category'])
+y = train_df['category']
+
+# Standardize numerical features
+numerical_cols = X.select_dtypes(include=['float64', 'int64']).columns
+scaler = StandardScaler()
+X[numerical_cols] = scaler.fit_transform(X[numerical_cols])
+
+# Feature selection for improved accuracy
+selector = SelectKBest(score_func=f_classif, k=10)
+X = selector.fit_transform(X, y)
+
+# Split the dataset into training and validation sets
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Create a pipeline with scaling and GMM
+gmm_pipeline = Pipeline([
+    ('scaler', StandardScaler()),
+    ('gmm', GaussianMixture())
+])
+
+# Define parameter grid for GridSearchCV
+param_grid = {
+    'gmm__n_components': [len(np.unique(y)), len(np.unique(y)) * 2],  # Fewer candidates
+    'gmm__covariance_type': ['full', 'tied'],  # Limited to 2 options
+    'gmm__reg_covar': [1e-6, 1e-4]  # Regularization for better convergence
+}
+
+# Perform grid search with fewer folds
+grid_search = GridSearchCV(
+    gmm_pipeline,
+    param_grid,
+    cv=2,  # Reduced folds
+    scoring='accuracy',
+    n_jobs=-1,
+    verbose=2
+)
+
+# Fit the grid search
+grid_search.fit(X_train, y_train)
+
+# Get the best model
+best_gmm = grid_search.best_estimator_
+
+# Predict on validation set
+y_pred_gmm = best_gmm.predict(X_val)
+val_accuracy_gmm = accuracy_score(y_val, y_pred_gmm)
+print(f"GMM Validation Accuracy: {val_accuracy_gmm}")
+print("GMM Classification Report:\n", classification_report(y_val, y_pred_gmm))
+
+# Prepare the test data and make predictions
+test_df = pd.read_csv('test.csv')
+test_df.drop(columns=['trip_ID', 'special_requirements'], inplace=True)
+test_df['female_count'] = test_df['female_count'].fillna(test_df['female_count'].median())
+test_df['male_count'] = test_df['male_count'].fillna(test_df['male_count'].median())
+
+# Feature Engineering for test data
+test_df['total_people'] = test_df['female_count'] + test_df['male_count']
+test_df['female_to_male_ratio'] = test_df['female_count'] / (test_df['male_count'] + 1)
+
+# Categorical processing with one-hot encoding for test data
+test_df[categorical_cols] = test_df[categorical_cols].fillna('Unknown')
+test_df = pd.get_dummies(test_df, columns=categorical_cols, drop_first=True)
+
+# Ensure the test set columns match the training set
+test_df = test_df.reindex(columns=train_df.drop(columns=['category']).columns, fill_value=0)
+
+# Feature selection for test data
+test_df = selector.transform(test_df)
+
+# Predictions on test data using the best GMM model
+pred_probs = best_gmm.predict_proba(test_df)
+results = pd.DataFrame({
+    'trip_ID': pd.read_csv('test.csv')['trip_ID'],
+    'category': np.argmax(pred_probs, axis=1)
+})
+
+# Save predictions
+results.to_csv('predictionsgmm55.csv', index=False)
+
+# Print best parameters
+print("\nBest Parameters:", grid_search.best_params_)
+#very unstable accuracy sometimes 10 sometimes 30 sometimes 45 
